@@ -1,6 +1,7 @@
 """
 Tests for the tags API.
 """
+from decimal import Decimal
 from django.test import TestCase
 from django.contrib.auth import get_user_model
 from django.urls import reverse
@@ -8,7 +9,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from core import models
+from core.models import Tag, Recipe
 
 from recipe.serializers import TagSerializer
 
@@ -48,13 +49,13 @@ class PrivateTagsAPITests(TestCase):
     def test_retrieve_tags(self):
         """Test retieving a list of tags."""
 
-        models.Tag.objects.create(user=self.user, name='Vegan')
-        models.Tag.objects.create(user=self.user, name='Dessert')
+        Tag.objects.create(user=self.user, name='Vegan')
+        Tag.objects.create(user=self.user, name='Dessert')
         res = self.client.get(TAGS_URL)
 
         self.assertEqual(res.status_code, status.HTTP_200_OK)
 
-        tags = models.Tag.objects.all().order_by('-name')
+        tags = Tag.objects.all().order_by('-name')
         serializer = TagSerializer(tags, many=True)
 
         self.assertEqual(res.data, serializer.data)  # type: ignore
@@ -63,18 +64,18 @@ class PrivateTagsAPITests(TestCase):
         """Test list of tags is limited th authenticated user."""
         other_user = create_user(email='other@example.com',
                                  pwd='otherpassword1234')
-        models.Tag.objects.create(user=other_user, name='Vegan')
-        models.Tag.objects.create(user=self.user, name='Dessert')
+        Tag.objects.create(user=other_user, name='Vegan')
+        Tag.objects.create(user=self.user, name='Dessert')
 
         res = self.client.get(TAGS_URL)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        tags = models.Tag.objects.filter(user=self.user)
+        tags = Tag.objects.filter(user=self.user)
         serializer = TagSerializer(tags, many=True)
         self.assertEqual(res.data, serializer.data)  # type: ignore
 
     def test_update_tag(self):
         """Test updating the tag."""
-        tag = models.Tag.objects.create(user=self.user, name='After dinner')
+        tag = Tag.objects.create(user=self.user, name='After dinner')
         payload = {'name': 'Dessert'}
 
         url = detail_url(tag.id)  # type: ignore
@@ -87,10 +88,54 @@ class PrivateTagsAPITests(TestCase):
 
     def test_delete_tag(self):
         """Test deleting the tag."""
-        tag = models.Tag.objects.create(user=self.user, name='After dinner')
+        tag = Tag.objects.create(user=self.user, name='After dinner')
 
         url = detail_url(tag.id)  # type: ignore
         res = self.client.delete(url)
 
         self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
-        self.assertFalse(models.Tag.objects.filter(id=tag.id).exists())
+        self.assertFalse(
+            Tag.objects.filter(id=tag.id).exists())  # type: ignore
+
+    def test_filter_tags_assigned_to_recipes(self):
+        """Test listing tags by those assigned to recipes."""
+        tag1 = Tag.objects.create(user=self.user, name='Tag1')
+        tag2 = Tag.objects.create(user=self.user, name='Tag2')
+        recipe = Recipe.objects.create(
+            user=self.user,
+            title='Some recipe',
+            time_minutes=5,
+            price=Decimal('2.54'),
+        )
+        recipe.tags.add(tag1)
+
+        res = self.client.get(TAGS_URL, {'assigned_only': 1})
+
+        s1 = TagSerializer(tag1)
+        s2 = TagSerializer(tag2)
+
+        self.assertIn(s1.data, res.data)  # type: ignore
+        self.assertNotIn(s2.data, res.data)  # type: ignore
+
+    def test_filtered_tags_unique(self):
+        """Test filtering tags return a unique list."""
+        tag = Tag.objects.create(user=self.user, name='Tag1')
+        Tag.objects.create(user=self.user, name='Tag2')
+        recipe1 = Recipe.objects.create(
+            title='Recipe1',
+            time_minutes=20,
+            price=Decimal('2.54'),
+            user=self.user,
+        )
+        recipe2 = Recipe.objects.create(
+            title='Recipe2',
+            time_minutes=20,
+            price=Decimal('2.54'),
+            user=self.user,
+        )
+        recipe1.tags.add(tag)
+        recipe2.tags.add(tag)
+
+        res = self.client.get(TAGS_URL, {'assigned_only': 1})
+
+        self.assertEqual(len(res.data), 1)  # type: ignore
